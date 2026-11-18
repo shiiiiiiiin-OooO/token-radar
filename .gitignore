@@ -1,0 +1,4 @@
+out/
+out2/
+.playwright-mcp/
+transcripts*.tar.gz
