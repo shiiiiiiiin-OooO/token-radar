@@ -26,7 +26,7 @@ interface Protocol {
 }
 interface Snapshot { as_of: string; source: string; floor_usd: number; protocols: Protocol[]; watchlist: string[] }
 interface Row { rank: number; slug: string; name: string; implied_value_usd: number; farm_steps: string[]; [k: string]: unknown }
-interface Radar { rows: Row[]; trading: unknown[]; calibration: { global: { n: number } }; [k: string]: unknown }
+interface Radar { rows: Row[]; trading: unknown[]; calibration: { n: number; elasticity: number; validation: { model: number; starter_quarter: number } }; [k: string]: unknown }
 
 function fail(message: string, code = 1): never {
   process.stderr.write(`token radar: ${message}\n`);
@@ -143,9 +143,11 @@ if (shots.length < 3) fail(`screenshots/ holds ${shots.length} images: hand in 3
 
 writeFileSync(join(out, 'dossier.json'), buildDossier(out, { text_max_bytes: TEXT_MAX_BYTES, screenshots: SCREENSHOT_CAPS, dashboard: { max_files: 400, max_bytes: 4_194_304 } }));
 
-const early = radar.rows.filter((r) => r.tier === 'early').length;
+const tiers = (t: string): number => radar.rows.filter((r) => r.tier === t).length;
+const cal = radar.calibration;
 process.stdout.write(
-  `token radar: ${snapshot.protocols.length} protocols, ${snapshot.watchlist.length} on the watchlist, ${radar.rows.length} pre-token rows ranked (${early} early), ` +
-    `${radar.trading.length} trading protocols set aside as calibration (${radar.calibration.global.n} priced)\n` +
+  `token radar: ${snapshot.protocols.length} protocols, ${snapshot.watchlist.length} on the watchlist, ${radar.rows.length} pre-token rows ranked ` +
+    `(${tiers('off-list')} off-list above the floor, ${tiers('early')} early below it)\n` +
+    `token radar: calibrated on ${cal.n} trading tokens: value ~ TVL^${cal.elasticity}, held-out error ${cal.validation.model}x (flat 0.25 x TVL: ${cal.validation.starter_quarter}x)\n` +
     `token radar: wrote board.json, data.js, dashboard/, screenshots/ (${shots.length}) and dossier.json to ${out}\n`,
 );
