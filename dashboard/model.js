@@ -156,7 +156,7 @@
     var implied = clamp(Math.round(base * growth * runway), 1, 1e14);
     var confidence = (age !== null ? 1 : 0) + (p.change_7d !== null ? 1 : 0) + (ic.n >= 3 ? 1 : 0);
     return {
-      implied: implied, base: Math.round(base),
+      as_of: asOf, implied: implied, base: Math.round(base),
       multiple: round4(base / p.tvl_usd), peers: ic.n, multiple_source: ic.source, family: family(p.category),
       growth_pct: round4(g), growth: round4(growth), runway: round4(runway), age_days: age, age_imputed: age === null,
       low: Math.max(1, Math.round(implied * Math.exp(cal.band.lo))), high: Math.round(implied * Math.exp(cal.band.hi)),
@@ -184,7 +184,7 @@
     'Sonic': 0.03, 'Monad': 0.02, 'Hyperliquid L1': 0.05, 'Sui': 0.02, 'Aptos': 0.01, 'Stellar': 0.01,
     'Algorand': 0.01, 'Flare': 0.03, 'Berachain': 0.05, 'Plasma': 0.01, 'Mantle': 0.05, 'Katana': 0.03,
     'Robinhood Chain': 0.03, 'Ripple': 0.01, 'TON': 0.05, 'Near': 0.01, 'Cardano': 0.25, 'Starknet': 0.05,
-    'zkSync Era': 0.1, 'Scroll': 0.1, 'Blast': 0.05, 'Mode': 0.03, 'Plume Mainnet': 0.03, 'Hemi': 0.05
+    'zkSync Era': 0.1, 'Scroll': 0.1, 'Blast': 0.05, 'Plume Mainnet': 0.03, 'Hemi': 0.05
   };
   var DEFAULT_GAS = 0.3;
   function gasOf(c) { return GAS.hasOwnProperty(c) ? GAS[c] : DEFAULT_GAS; }
@@ -242,26 +242,38 @@
     var bps = cap / p.tvl_usd * 1e4;
     var est = Math.round(s.per_1k * cap / 10) / 100;
     var breakEvenPool = Math.round((fees + forgone) / cap * p.tvl_usd);
+    var net = Math.round((est - fees - forgone) * 100) / 100, cost = fees + forgone, hours = (70 + 5 * weeks) / 60;
+    // Verdict: farm when the scenario pays at least twice its costs on a record we trust; thin (half size)
+    // when it pays but the record is weak or shrinking; skip when the costs are not covered.
+    var shrinking = p.change_7d !== null && p.change_7d <= -15;
+    var verdict = net <= 0 ? 'skip' : est >= 2 * cost && s.confidence !== 'low' && !shrinking ? 'farm' : 'thin';
+    var why = verdict === 'skip' ? 'the ' + usd(est) + ' scenario drop does not cover ' + usd(cost) + ' of costs' :
+      verdict === 'farm' ? 'the scenario drop is ' + (est / cost).toFixed(1) + 'x its costs on a ' + s.confidence + '-confidence record' :
+      'it pays, but ' + (shrinking ? 'TVL fell ' + Math.abs(p.change_7d).toFixed(0) + '% this week' : s.confidence === 'low' ? 'the record is thin' : 'only ' + (est / cost).toFixed(1) + 'x its costs') + ': farm half size';
+    // Dates from the snapshot day, so every step says when, not just how long.
+    var day = function (d) { return new Date(Date.parse(s.as_of + 'T00:00:00Z') + d * 86400000).toISOString().slice(0, 10); };
     var steps = [
-      { do: 'Fund a fresh wallet used for nothing else with ' + usd(cap) + ' of USDC and a ' + usd(buffer) + ' gas buffer on ' + ch.chain + ': ' + ch.why, cost: usd(buffer) + ' gas buffer' + (bridge ? ', about ' + usd(bridge) + ' to bridge in' : ''), time: '15 minutes' },
-      { do: 'Go / no-go: open ' + p.name + ' from its DefiLlama page and go on only if its TVL is still above ' + big(p.tvl_usd * 0.75) + ' (75% of the ' + big(p.tvl_usd) + ' in this snapshot) and the contract matches its docs; approve exactly ' + usd(cap) + ', never unlimited', cost: usd(fee) + ' for the approval', time: '10 minutes' },
-      { do: fill(pb.core), cost: usd(cap) + ' at risk, ' + usd(fee * 2) + ' of fees', time: '10 minutes' },
-      { do: fill(pb.second), cost: usd(fee * (pb.txs - 1)) + ' of fees', time: '15 minutes' },
-      { do: 'Each week for ' + weeks + ' weeks, ' + fill(pb.weekly) + ', so the wallet shows activity in every weekly snapshot', cost: usd(fee) + ' a week, ' + usd(fee * weeks) + ' in all', time: '5 minutes a week' },
-      { do: 'Exit rule: withdraw early if TVL falls under ' + big(p.tvl_usd * 0.6) + ' or the 7-day change is below -20% at two weekly checks in a row; otherwise hold all ' + weeks + ' weeks. The position is ' + (bps < 0.01 ? bps.toFixed(4) : bps.toFixed(2)) + ' bps of the TVL', cost: usd(forgone) + ' of yield forgone at ' + Math.round(model.stable_apr * 100) + '% a year', time: weeks + ' weeks' },
-      { do: 'Claim only from the link on ' + p.name + '\'s own site and never pay to claim, then withdraw. Break-even: fees and forgone yield of ' + usd(fees + forgone) + ' are covered only if the community pool is above ' + big(breakEvenPool) + '; the model\'s ' + Math.round(model.airdrop_share * 100) + '% scenario pool is ' + big(s.drop_pool), cost: usd(fee * 2) + ' to claim and withdraw', time: '20 minutes' }
+      { when: day(0), do: 'Fund a fresh wallet used for nothing else with ' + usd(cap) + ' of USDC and a ' + usd(buffer) + ' gas buffer on ' + ch.chain + ': ' + ch.why, cost: usd(buffer) + ' gas buffer' + (bridge ? ', about ' + usd(bridge) + ' to bridge in' : ''), time: '15 minutes' },
+      { when: day(0), do: 'Go / no-go: open ' + p.name + ' from its DefiLlama page and go on only if its TVL is still above ' + big(p.tvl_usd * 0.75) + ' (75% of the ' + big(p.tvl_usd) + ' in this snapshot) and the contract matches its docs; approve exactly ' + usd(cap) + ', never unlimited', cost: usd(fee) + ' for the approval', time: '10 minutes' },
+      { when: day(0), do: fill(pb.core), cost: usd(cap) + ' at risk, ' + usd(fee * 2) + ' of fees', time: '10 minutes' },
+      { when: day(1), do: fill(pb.second), cost: usd(fee * (pb.txs - 1)) + ' of fees', time: '15 minutes' },
+      { when: day(7) + ' to ' + day(7 * weeks), do: 'Every 7 days for ' + weeks + ' weeks, ' + fill(pb.weekly) + ', so the wallet shows activity in every weekly snapshot', cost: usd(fee) + ' a week, ' + usd(fee * weeks) + ' in all', time: '5 minutes a week' },
+      { when: 'each check', do: 'Exit rule: withdraw early if TVL falls under ' + big(p.tvl_usd * 0.6) + ' or the 7-day change is below -20% at two weekly checks in a row; otherwise hold all ' + weeks + ' weeks. The position is ' + (bps < 0.01 ? bps.toFixed(4) : bps.toFixed(2)) + ' bps of the TVL', cost: usd(forgone) + ' of yield forgone at ' + Math.round(model.stable_apr * 100) + '% a year', time: weeks + ' weeks' },
+      { when: day(7 * weeks), do: 'Claim only from the link on ' + p.name + '\'s own site and never pay to claim, then withdraw. Break-even: fees and forgone yield of ' + usd(fees + forgone) + ' are covered only if the community pool is above ' + big(breakEvenPool) + '; the model\'s ' + Math.round(model.airdrop_share * 100) + '% scenario pool is ' + big(s.drop_pool), cost: usd(fee * 2) + ' to claim and withdraw', time: '20 minutes' }
     ];
     return {
       chain: ch.chain, chain_why: ch.why, fee: fee, capital: cap, weeks: weeks, kind: pb.kind,
       fees_total: fees, forgone: forgone, hands_on_min: 70 + 5 * weeks, bps: round4(bps),
-      est_drop: est, net: Math.round((est - fees - forgone) * 100) / 100, break_even_pool: breakEvenPool,
+      est_drop: est, net: net, break_even_pool: breakEvenPool, verdict: verdict, verdict_why: why,
+      per_hour: Math.round(net / hours * 100) / 100, start: day(0), decide: day(7 * weeks),
       steps: steps
     };
   }
 
   // The plan's steps as the gate's strings: the action, then its cost and time.
   function stepStrings(plan) {
-    var out = plan.steps.map(function (st) { return st.do + '. Cost: ' + st.cost + '. Time: ' + st.time + '.'; });
+    var out = plan.steps.map(function (st) { return (st.when ? st.when + ': ' : '') + st.do + '. Cost: ' + st.cost + '. Time: ' + st.time + '.'; });
+    out.unshift('Verdict: ' + plan.verdict.toUpperCase() + ', ' + plan.verdict_why + '. Window ' + plan.start + ' to ' + plan.decide + ', ' + usd(plan.per_hour) + ' net per hands-on hour.');
     out.push('Plan total: ' + usd(plan.capital) + ' at risk on ' + plan.chain + ', about ' + usd(plan.fees_total) + ' in fees and ' + usd(plan.forgone) +
       ' of forgone yield, ' + Math.round(plan.hands_on_min / 6) / 10 + ' hours hands-on over ' + plan.weeks + ' weeks. Scenario drop on this position: ' +
       usd(plan.est_drop) + ', net ' + (plan.net < 0 ? '-' : '') + usd(Math.abs(plan.net)) + ' after costs.');

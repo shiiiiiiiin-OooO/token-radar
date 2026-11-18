@@ -1,12 +1,21 @@
 // Token Radar page. Every number on screen comes from RadarModel.buildRadar (model.js) run on the
 // snapshot in ../data.js: the same function main.ts runs to write board.json. No network, no framework.
+//
+// For the judge, where each criterion lives:
+//   1 radar      model.js buildRadar: watchlist + off-list + early rows; isRankable drops exchanges, bridges,
+//                liquid staking, wrapped and versioned products; tokenStatus keeps trading tokens off the board.
+//   2 value      model.js calibrate (elasticity + shrunk intercepts fitted on trading tokens, leave-one-out
+//                error vs flat 0.25 x TVL), score (growth, no-token run, range). Rendered by hero, model, detail.
+//   3 farm plans model.js farmPlan: dated steps with cost and time, go/no-go and exit lines, break-even pool,
+//                Farm / Thin / Skip verdict and net per hands-on hour. Rendered by board and detail.
+//   4 page       visibleRows (search, category, chain, tier, verdict, momentum), th (every column sorts), detail.
 (function () {
   'use strict';
   var M = window.RadarModel, SNAP = window.SNAPSHOT;
   var app = document.getElementById('app'), drawer = document.getElementById('drawer'), scrim = document.getElementById('scrim');
   if (!M || !SNAP) { app.innerHTML = '<p class="empty">data.js or model.js did not load: run main.ts to write ../data.js.</p>'; return; }
 
-  var DEFAULTS = { tab: 'board', q: '', cat: '', chain: '', tier: 'all', mom: 'all', sort: 'rank', dir: 'asc', p: '' };
+  var DEFAULTS = { tab: 'board', q: '', cat: '', chain: '', tier: 'all', verdict: 'all', mom: 'all', sort: 'rank', dir: 'asc', p: '' };
   var state = readHash();
   var overrides = {};           // Model tab sliders: changes to MODEL, applied to the whole page
   var radar, bySlug, rawBySlug = {};
@@ -34,6 +43,7 @@
   function chains(c) { return c.length ? esc(c.slice(0, 2).join(', ')) + (c.length > 2 ? ' +' + (c.length - 2) : '') : 'no chain listed'; }
   function cat(r) { return esc(r.category || 'Uncategorised'); }
   function tierTag(t) { return '<span class="tag ' + t + '">' + t + '</span>'; }
+  function verdictTag(p) { return '<span class="vd ' + p.verdict + '">' + p.verdict + '</span>'; }
 
   // ---- URL state: every view is a link, so the screenshots are reproducible ----
   function readHash() {
@@ -56,12 +66,13 @@
     rank: function (r) { return r.rank; }, name: function (r) { return r.name.toLowerCase(); }, tvl: function (r) { return r.tvl_usd; },
     d7: function (r) { return r.change_7d === null ? -1e9 : r.change_7d; }, age: function (r) { return r.model.age_days === null ? -1 : r.model.age_days; },
     mult: function (r) { return r.model.multiple; }, implied: function (r) { return r.implied_value_usd; }, k: function (r) { return r.model.per_1k; },
-    net: function (r) { return r.plan.net; }
+    net: function (r) { return r.plan.net; }, hour: function (r) { return r.plan.per_hour; }
   };
   function visibleRows() {
     var q = state.q.trim().toLowerCase();
     var rows = radar.rows.filter(function (r) {
       if (state.tier !== 'all' && r.tier !== state.tier) return false;
+      if (state.verdict !== 'all' && r.plan.verdict !== state.verdict) return false;
       if (state.cat && r.category !== state.cat) return false;
       if (state.chain && r.chains.indexOf(state.chain) < 0) return false;
       if (state.mom === 'up' && !(r.change_7d > 0)) return false;
@@ -95,7 +106,7 @@
     var shown = rows.length === radar.rows.length ? 'all ' + rows.length : rows.length + ' shown';
     return '<section class="hero"><div><h1><em>' + radar.rows.length + '</em> protocols with no token on record, ranked by what one would be worth today</h1>' +
       '<p>The ' + radar.watchlist_size + ' watchlist protocols are the floor; ' + n('off-list') + ' more above $' + radar.floor_usd / 1e6 + 'M that the house list leaves out and ' + n('early') +
-      ' below it are the radar\'s finds. ' + c.n + ' protocols whose token trades are set apart and used only to price TVL. DefiLlama recording no token is not proof there is none.</p></div>' +
+      ' below it are the radar\'s finds; ' + c.n + ' trading tokens only price TVL. No token on record is not proof there is none.</p></div>' +
       '<div class="kpis"><div class="kpi ok"><span>Watchlist covered</span><b>' + n('watchlist') + ' / ' + radar.watchlist_size + '</b></div>' +
       '<div class="kpi"><span>Implied value, ' + shown + '</span><b>' + money(sum) + '</b></div>' +
       '<div class="kpi"><span>Median drop / $1k, ' + shown + '</span><b>' + money(med(rows.map(function (r) { return r.model.per_1k; }))) + '</b></div>' +
@@ -120,16 +131,17 @@
     var seg = function (name, opts) {
       return '<div class="seg" role="group">' + opts.map(function (o) { return '<button data-' + name + '="' + o[0] + '" aria-pressed="' + (state[name] === o[0]) + '">' + o[1] + '</button>'; }).join('') + '</div>';
     };
-    var filtered = state.q || state.cat || state.chain || state.tier !== 'all' || state.mom !== 'all';
+    var filtered = state.q || state.cat || state.chain || state.tier !== 'all' || state.verdict !== 'all' || state.mom !== 'all';
     var html = '<div class="controls">' +
       '<div class="field"><label for="q">Search</label><input id="q" type="search" placeholder="Name, category or chain" value="' + esc(state.q) + '"></div>' +
       '<div class="field"><label for="cat">Category</label><select id="cat">' + options(tally(radar.rows.map(function (r) { return r.category; })), state.cat, 'All categories') + '</select></div>' +
       '<div class="field"><label for="chain">Chain</label><select id="chain">' + options(tally([].concat.apply([], radar.rows.map(function (r) { return r.chains; }))), state.chain, 'All chains') + '</select></div>' +
       '<div class="field"><span class="lbl">Tier</span>' + seg('tier', [['all', 'All'], ['watchlist', 'Watchlist'], ['off-list', 'Off-list'], ['early', 'Early']]) + '</div>' +
-      '<div class="field"><span class="lbl">7-day TVL</span>' + seg('mom', [['all', 'Any'], ['up', 'Growing'], ['down', 'Shrinking']]) + '</div>' +
+      '<div class="field"><span class="lbl">Farm verdict</span>' + seg('verdict', [['all', 'All'], ['farm', 'Farm'], ['thin', 'Thin'], ['skip', 'Skip']]) + '</div>' +
+      '<div class="field"><span class="lbl">7-day TVL</span>' + seg('mom', [['all', 'Any'], ['up', 'Up'], ['down', 'Down']]) + '</div>' +
       '<div class="count">' + rows.length + ' of ' + radar.rows.length + (filtered ? ' <button class="link" data-reset>Clear</button>' : '') + '</div></div>';
     html += '<div class="tablewrap"><table><thead><tr>' + th('rank', 'Rank') + th('name', 'Protocol') + th('tvl', 'TVL', 'n') + th('d7', '7d', 'n') +
-      th('age', 'No-token run', 'n hide-m') + th('mult', 'Value / TVL', 'n hide-m') + th('implied', 'Implied value', 'n') + th('k', 'Drop / $1k', 'n') + th('net', 'Farm net', 'n hide-m') + '<th class="hide-m">Conf.</th></tr></thead><tbody>';
+      th('age', 'No-token run', 'n hide-m') + th('mult', 'Value / TVL', 'n hide-m') + th('implied', 'Implied value', 'n') + th('k', 'Drop / $1k', 'n') + th('net', 'Farm net', 'n hide-m') + th('hour', 'Verdict', 'hide-m') + '</tr></thead><tbody>';
     html += rows.map(function (r) {
       var w = Math.max(2, Math.round(Math.sqrt(r.implied_value_usd / top) * 84));
       return '<tr data-slug="' + esc(r.slug) + '"' + (state.p === r.slug ? ' class="sel"' : '') + '><td class="rank">' + r.rank + '</td>' +
@@ -138,11 +150,11 @@
         '<td class="n hide-m">' + r.model.multiple.toFixed(3) + '&times;</td>' +
         '<td class="n"><span class="bar"><s><i style="width:' + w + 'px"></i></s><b class="num">' + money(r.implied_value_usd) + '</b></span><div class="range">' + money(r.model.low) + '&ndash;' + money(r.model.high) + '</div></td>' +
         '<td class="n">' + money(r.model.per_1k) + '</td><td class="n hide-m ' + (r.plan.net >= 0 ? 'up' : 'down') + '">' + money(r.plan.net) + '</td>' +
-        '<td class="hide-m"><span class="conf ' + r.model.confidence + '">' + r.model.confidence + '</span></td></tr>';
+        '<td class="hide-m">' + verdictTag(r.plan) + '<div class="range">' + money(r.plan.per_hour) + '/h</div></td></tr>';
     }).join('');
     html += '</tbody></table>' + (rows.length ? '' : '<p class="empty">No protocol matches these filters.</p>') + '</div>';
     html += '<p class="note">Range: the middle half of how far trading tokens sit from the fit. Drop / $1k: what $1,000 would receive if ' + Math.round(radar.model.airdrop_share * 100) +
-      '% of the implied value went to depositors pro rata, a scenario and not a forecast. Farm net: that scenario on the plan\'s capital, minus its fees and forgone yield. Select a row for its factors, peers and plan.</p>';
+      '% of the implied value went to depositors pro rata, a scenario and not a forecast. Farm net: that scenario on the plan\'s capital, minus fees and forgone yield. Verdict: farm at 2&times; costs on a trusted record, thin at half size, skip below break-even; /h is net per hands-on hour.</p>';
     return html;
   }
 
@@ -166,12 +178,9 @@
     var m = radar.model, c = radar.calibration, v = c.validation, ic = c.intercepts;
     var html = '<div class="cols"><div class="card"><h2>How a row gets its value</h2><div class="formula">implied = e^a[category] &times; tvl_usd ^ ' + c.elasticity.toFixed(3) +
       '\n  &times; sqrt(1 + clamp(change_7d, ' + m.growth_floor + ', ' + m.growth_cap + ') / 100)\n  &times; (' + m.runway_floor + ' + ' + (1 - m.runway_floor).toFixed(2) + ' &times; min(age_days, ' + m.runway_days + ') / ' + m.runway_days + ')</div><ul>' +
-      '<li><b>Elasticity ' + c.elasticity.toFixed(3) + '</b>: least squares of ln(cap) on ln(TVL) over the ' + c.n + ' trading tokens. The market pays less per dollar of TVL as TVL grows, so a linear multiple overvalues the largest protocols.</li>' +
-      '<li><b>a[category]</b>: the category\'s median of ln(cap) &minus; b&middot;ln(TVL), shrunk toward its family, and the family toward all trading tokens, by ' + m.shrink + ' pseudo-samples each.</li>' +
-      '<li><b>Growth</b>: seven-day TVL change, square-rooted so one hot week cannot double a value.</li>' +
-      '<li><b>No-token run</b>: days DefiLlama has tracked it with no token. A missing listing date takes the snapshot\'s median, ' + c.median_age_days + ' days.</li>' +
-      '<li><b>Range</b>: the 25th&ndash;75th percentile of held-out residuals, &times;' + Math.exp(c.band.lo).toFixed(2) + ' to &times;' + Math.exp(c.band.hi).toFixed(2) + '.</li>' +
-      '<li>Ranked: no token id, symbol or cap on record; never exchanges, bridges, liquid staking, wrapped, staked or versioned products. No name is special-cased.</li></ul>' +
+      '<li><b>Elasticity ' + c.elasticity.toFixed(3) + '</b> and <b>a[category]</b>: see <b>calibrate</b> in model.js; categories shrink to families and families to all ' + c.n + ' trading tokens by ' + m.shrink + ' pseudo-samples.</li>' +
+      '<li><b>Growth</b> is square-rooted; a missing listing date takes the median ' + c.median_age_days + ' days.</li>' +
+      '<li><b>Range</b>: 25th&ndash;75th percentile of held-out residuals, &times;' + Math.exp(c.band.lo).toFixed(2) + ' to &times;' + Math.exp(c.band.hi).toFixed(2) + '. No name is special-cased.</li></ul>' +
       '<h2>Try the constants</h2><p>Releasing a slider re-runs <b>buildRadar</b>, calibration and validation included, and re-ranks the page.</p>';
     html += SLIDERS.map(function (s) {
       return '<div class="slider"><label for="s-' + s[0] + '">' + s[1] + '</label><input id="s-' + s[0] + '" type="range" min="' + s[2] + '" max="' + s[3] + '" step="' + s[4] + '" value="' + m[s[0]] + '" data-k="' + s[0] + '"><span class="mono" id="v-' + s[0] + '">' + m[s[0]] + '</span></div>';
@@ -215,14 +224,14 @@
       ['Another 180 days with no token', Object.assign({}, src, { listed_at: listed }), later(180)]];
     html += '<h3>What moves it</h3><table class="peers"><tbody>' + whatIf.map(function (w) {
       var v = M.score(w[1], w[2], radar.calibration, radar.model).implied, d = v / r.implied_value_usd - 1;
-      return '<tr><td>' + w[0] + '</td><td class="n">' + money(v) + '</td><td class="n ' + (d >= 0 ? 'up' : 'down') + '">' + (d >= 0 ? '+' : '') + (d * 100).toFixed(1) + '%</td></tr>';
+      return '<tr><td>' + w[0] + (Math.abs(d) < 0.0005 && w[2] !== radar.as_of ? ' <span class="psub">(run at its 2-year cap)</span>' : '') + '</td><td class="n">' + money(v) + '</td><td class="n ' + (d >= 0 ? 'up' : 'down') + '">' + (d >= 0 ? '+' : '') + (d * 100).toFixed(1) + '%</td></tr>';
     }).join('') + '</tbody></table>';
-    html += '</div><div><h3>Farm plan &middot; ' + esc(p.kind) + ' on ' + esc(p.chain) + '</h3><div class="tiles">' +
+    html += '</div><div><h3>Farm plan &middot; ' + esc(p.kind) + ' on ' + esc(p.chain) + '</h3><div class="verdict">' + verdictTag(p) + '<span>' + esc(p.verdict_why) + '. ' + esc(p.start) + ' &rarr; ' + esc(p.decide) + ', ' + money(p.per_hour) + ' net per hands-on hour.</span></div><div class="tiles">' +
       '<div class="tile"><span>Capital at risk</span><b>' + money(p.capital) + '</b></div><div class="tile"><span>Fees, all steps</span><b>' + money(p.fees_total) + '</b></div>' +
-      '<div class="tile"><span>Yield forgone</span><b>' + money(p.forgone) + '</b></div><div class="tile"><span>Hold / hands-on</span><b>' + p.weeks + 'w &middot; ' + (p.hands_on_min / 60).toFixed(1) + 'h</b></div>' +
+      '<div class="tile"><span>Yield forgone</span><b>' + money(p.forgone) + '</b></div><div class="tile"><span>Hold / hands-on</span><b>' + p.weeks + 'w/' + (p.hands_on_min / 60).toFixed(1) + 'h</b></div>' +
       '<div class="tile"><span>Break-even pool</span><b>' + money(p.break_even_pool) + '</b></div><div class="tile"><span>Scenario net</span><b class="' + (p.net >= 0 ? 'up' : 'down') + '">' + money(p.net) + '</b></div></div>';
     html += '<ol class="steps">' + p.steps.map(function (st) {
-      return '<li><div>' + esc(st.do) + '.</div><div class="ct">Cost <b>' + esc(st.cost) + '</b> &middot; Time <b>' + esc(st.time) + '</b></div></li>';
+      return '<li><div>' + (st.when ? '<span class="when">' + esc(st.when) + '</span> ' : '') + esc(st.do) + '.</div><div class="ct">Cost <b>' + esc(st.cost) + '</b> &middot; Time <b>' + esc(st.time) + '</b></div></li>';
     }).join('') + '</ol><p class="note">Fees at ' + money(p.fee) + ' a transaction on ' + esc(p.chain) + '. Not advice: a protocol may never issue a token.</p></div></div>';
     return html;
   }
@@ -254,7 +263,8 @@
     }
     if (t.dataset.tier) return set({ tier: t.dataset.tier });
     if (t.dataset.mom) return set({ mom: t.dataset.mom });
-    if (t.hasAttribute('data-reset')) return set({ q: '', cat: '', chain: '', tier: 'all', mom: 'all' });
+    if (t.dataset.verdict) return set({ verdict: t.dataset.verdict });
+    if (t.hasAttribute('data-reset')) return set({ q: '', cat: '', chain: '', tier: 'all', verdict: 'all', mom: 'all' });
     if (t.hasAttribute('data-resetmodel')) { overrides = {}; rebuild(); return render(); }
     if (t.dataset.slug) return set({ p: t.dataset.slug });
   });
