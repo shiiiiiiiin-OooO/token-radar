@@ -1,26 +1,24 @@
-// Token Radar model (radar-3). One plain script, two hosts: main.ts runs it in node:vm to write
+// Token Radar model (radar-4). One plain script, two hosts: main.ts runs it in node:vm to write
 // board.json; the page runs it with <script> to draw every screen. Same function, same numbers.
 //
-//   implied = exp(a[category]) x tvl_usd ^ b  x  growth(change_7d)  x  runway(age_days)
+//   implied = exp(a[group]) x tvl_usd ^ b  x  growth(change_7d)  x  runway(age_days)
 //
 // b and a[] are fitted on the same snapshot, on the protocols whose token already trades:
-//   b       ordinary least squares of ln(mcap) on ln(tvl). The market does not price TVL linearly:
-//           on this snapshot b is about 0.5, so ten times the TVL is worth about three times the cap.
-//   a[cat]  the median of ln(mcap) - b ln(tvl) in the category, shrunk toward its family's median
-//           (vaults, lending, dexes, ...), which is shrunk toward the median of all trading tokens,
-//           each by SHRINK pseudo-samples. A category with one trading token barely moves its value.
-// growth   sqrt(1 + g/100), g = change_7d clamped to [-50, 100]: momentum, damped.
-// runway   0.6 at day 0 rising to 1.0 at two years with no token on record. An unknown listing date
-//          takes the snapshot's median age, not a guess.
-// range    the 25th..75th percentile band of the fit's own residuals (leave-one-out), so every value
-//          carries how far the market typically sits from it.
-// No protocol name is special-cased anywhere: the same functions score every row.
+//   b        least squares of ln(mcap) on ln(tvl): on this snapshot about 0.5, so ten times the TVL
+//            is worth about three times the cap. A linear multiple overvalues the largest protocols.
+//   a[group] the mean residual of the group, shrunk toward its parent by SHRINK pseudo-samples. Which
+//            grouping (none, family, category) is not chosen by hand: calibrate holds every trading token
+//            out in turn, predicts it from the rest under each, and keeps the one with the lowest error.
+// growth   sqrt(1 + g/100), g = change_7d clamped to [-50, 100]; runway 0.6 at day 0 rising to 1.0 at
+//          two years with no token on record (unknown listing date: the snapshot's median age). Both
+//          are stated priors: calibrate also tests fitting them on trading tokens and reports the result.
+// range    the 25th..75th percentile of held-out residuals. No protocol name is special-cased anywhere.
 (function (root) {
   'use strict';
 
   var MODEL = {
-    version: 'radar-3',
-    shrink: 4,
+    version: 'radar-4',
+    shrink: 8,
     elasticity_min: 0.3, elasticity_max: 1,
     growth_floor: -50, growth_cap: 100,
     runway_floor: 0.6, runway_days: 730,
@@ -80,66 +78,82 @@
     return isFinite(a) && isFinite(b) ? Math.max(0, Math.floor((a - b) / DAY_MS)) : null;
   }
 
-  // ---- calibration ------------------------------------------------------------------------------
+  // ---- calibration
   function slope(pts) {
     var n = pts.length, mx = 0, my = 0, sxy = 0, sxx = 0;
     pts.forEach(function (p) { mx += p.x / n; my += p.y / n; });
     pts.forEach(function (p) { sxy += (p.x - mx) * (p.y - my); sxx += (p.x - mx) * (p.x - mx); });
     return sxx > 0 ? sxy / sxx : 1;
   }
-  // Intercepts for every category and family from one set of trading points and one elasticity.
-  function intercepts(pts, b, k) {
-    var all = [], fam = {}, cat = {};
-    pts.forEach(function (p) {
-      var r = p.y - b * p.x;
-      all.push(r); (fam[p.fam] = fam[p.fam] || []).push(r); (cat[p.cat] = cat[p.cat] || []).push(r);
-    });
-    var g = median(all), out = { global: g, families: {}, categories: {} };
-    Object.keys(fam).forEach(function (f) { var n = fam[f].length; out.families[f] = { n: n, a: (n * median(fam[f]) + k * g) / (n + k) }; });
-    Object.keys(cat).forEach(function (c) {
-      var n = cat[c].length, f = out.families[family(c)], base = f ? f.a : g;
-      out.categories[c] = { n: n, a: (n * median(cat[c]) + k * base) / (n + k), raw: median(cat[c]) };
-    });
-    return out;
+  function mean(xs) { return xs.reduce(function (a, x) { return a + x; }, 0) / (xs.length || 1); }
+  function group(pts, key, r) { var o = {}; pts.forEach(function (p, i) { (o[p[key]] = o[p[key]] || []).push(r[i]); }); return o; }
+
+  // One fit on a set of trading points: the elasticity, then every family's and category's intercept.
+  function fit(pts, structure, k, model) {
+    var b = clamp(slope(pts), model.elasticity_min, model.elasticity_max);
+    var r = pts.map(function (p) { return p.y - b * p.x; }), g = mean(r), F = {}, C = {};
+    var fam = group(pts, 'fam', r), cat = group(pts, 'cat', r);
+    Object.keys(fam).forEach(function (f) { var n = fam[f].length; F[f] = { n: n, a: (n * mean(fam[f]) + k * g) / (n + k) }; });
+    Object.keys(cat).forEach(function (c) { var n = cat[c].length, base = F[family(c)] ? F[family(c)].a : g; C[c] = { n: n, a: (n * mean(cat[c]) + k * base) / (n + k) }; });
+    return { b: b, global: g, structure: structure, families: F, categories: C };
   }
   function interceptFor(ic, category) {
-    var c = ic.categories[category || 'Uncategorised'];
-    if (c) return { a: c.a, n: c.n, source: 'category' };
-    var f = ic.families[family(category)];
-    return f ? { a: f.a, n: 0, source: 'family' } : { a: ic.global, n: 0, source: 'global' };
+    var c = ic.categories[category || 'Uncategorised'], f = ic.families[family(category)];
+    if (ic.structure === 'category' && c) return { a: c.a, n: c.n, source: 'category' };
+    if (ic.structure !== 'global' && f) return { a: f.a, n: f.n, source: 'family' };
+    return { a: ic.global, n: 0, source: 'global' };
+  }
+  // Hold each point out, fit on the rest, predict it: signed log errors. `extra` adds a term under test.
+  function heldOut(pts, structure, model, extra) {
+    return pts.map(function (p, i) {
+      var rest = pts.filter(function (_, j) { return j !== i; }), f = fit(rest, structure, model.shrink, model);
+      return p.y - interceptFor(f, p.cat).a - f.b * p.x - (extra ? extra(p, rest, f) : 0);
+    });
+  }
+  function factor(errs) { return round4(Math.exp(median(errs.map(Math.abs)))); }   // 2.0 = "typically off by 2x"
+  // A term fitted on the residuals of the rest: its least-squares coefficient on one feature.
+  function fittedTerm(feat) {
+    return function (p, rest, f) {
+      var e = rest.map(function (q) { return q.y - interceptFor(f, q.cat).a - f.b * q.x; }), v = rest.map(feat);
+      var mv = mean(v), me = mean(e), sxy = 0, sxx = 0;
+      v.forEach(function (x, i) { sxy += (x - mv) * (e[i] - me); sxx += (x - mv) * (x - mv); });
+      return sxx > 0 ? sxy / sxx * (feat(p) - mv) : 0;
+    };
   }
 
-  // Fit, then hold each trading token out in turn and predict it from the rest: the honest error.
+  // Every modelling choice is made by held-out error on the trading tokens, and every result is returned.
   function calibrate(snapshot, model) {
-    var pts = [];
+    var ages = snapshot.protocols.map(function (p) { return ageDays(snapshot.as_of, p.listed_at); }).filter(function (a) { return a !== null; });
+    var medAge = Math.round(median(ages)), pts = [];
     snapshot.protocols.forEach(function (p) {
       if (tokenStatus(p) !== 'trading' || !(p.tvl_usd > 0)) return;
-      var c = p.category || 'Uncategorised';
-      pts.push({ slug: p.slug, name: p.name, cat: c, fam: family(c), x: Math.log(p.tvl_usd), y: Math.log(p.mcap_usd), tvl: p.tvl_usd, mcap: p.mcap_usd, symbol: p.symbol });
+      var c = p.category || 'Uncategorised', age = ageDays(snapshot.as_of, p.listed_at);
+      pts.push({ slug: p.slug, name: p.name, cat: c, fam: family(c), x: Math.log(p.tvl_usd), y: Math.log(p.mcap_usd), tvl: p.tvl_usd, mcap: p.mcap_usd, symbol: p.symbol,
+        g: clamp(p.change_7d === null ? 0 : p.change_7d, model.growth_floor, model.growth_cap), years: (age === null ? medAge : age) / 365, listed: p.listed_at });
     });
-    var b = clamp(slope(pts), model.elasticity_min, model.elasticity_max);
-    var ic = intercepts(pts, b, model.shrink);
-    var flatLog = median(pts.map(function (p) { return p.y - p.x; }));
-    var errModel = [], errFlat = [], errStarter = [], resid = [];
-    pts.forEach(function (p, i) {
-      var rest = pts.filter(function (_, j) { return j !== i; });
-      var bi = clamp(slope(rest), model.elasticity_min, model.elasticity_max);
-      var pred = interceptFor(intercepts(rest, bi, model.shrink), p.cat).a + bi * p.x;
-      resid.push(p.y - pred);
-      errModel.push(Math.abs(p.y - pred));
-      errFlat.push(Math.abs(p.y - p.x - flatLog));
-      errStarter.push(Math.abs(p.y - p.x - Math.log(0.25)));
-    });
-    var ages = snapshot.protocols.map(function (p) { return ageDays(snapshot.as_of, p.listed_at); }).filter(function (a) { return a !== null; });
+    var structures = {};
+    ['global', 'family', 'category'].forEach(function (s) { structures[s] = heldOut(pts, s, model); });
+    var best = Object.keys(structures).sort(function (a, b) { return factor(structures[a]) - factor(structures[b]); })[0];
+    var resid = structures[best], ic = fit(pts, best, model.shrink, model);
+    // Walk-forward: fit on the tokens DefiLlama listed first, predict the half it listed later.
+    var dated = pts.filter(function (p) { return p.listed; }).sort(function (a, b) { return a.listed < b.listed ? -1 : a.listed > b.listed ? 1 : 0; });
+    var half = dated.length >> 1, wf = fit(dated.slice(0, half), best, model.shrink, model), later = dated.slice(half);
     return {
-      n: pts.length, elasticity: round4(b), global_a: ic.global, intercepts: ic, points: pts,
-      median_age_days: Math.round(median(ages)),
+      n: pts.length, elasticity: round4(ic.b), intercepts: ic, points: pts, structure: best, median_age_days: medAge,
       band: { lo: quantile(resid, 0.25), hi: quantile(resid, 0.75) },
-      validation: {   // median error as a multiplicative factor: 2.0 means "typically off by 2x"
-        model: round4(Math.exp(median(errModel))),
-        flat_median: round4(Math.exp(median(errFlat))),
-        starter_quarter: round4(Math.exp(median(errStarter))),
-        within_2x: round4(errModel.filter(function (e) { return e <= Math.log(2); }).length / pts.length)
+      validation: {
+        model: factor(resid),
+        starter_quarter: factor(pts.map(function (p) { return p.y - p.x - Math.log(0.25); })),
+        within_2x: round4(resid.filter(function (e) { return Math.abs(e) <= Math.log(2); }).length / pts.length),
+        structures: { global: factor(structures.global), family: factor(structures.family), category: factor(structures.category) },
+        walk_forward: { train: half, test: later.length, from: later.length ? later[0].listed : null,
+          model: factor(later.map(function (p) { return p.y - interceptFor(wf, p.cat).a - wf.b * p.x; })),
+          starter_quarter: factor(later.map(function (p) { return p.y - p.x - Math.log(0.25); })) },
+        terms: {
+          growth_prior: factor(heldOut(pts, best, model, function (p) { return 0.5 * Math.log(1 + p.g / 100); })),
+          growth_fitted: factor(heldOut(pts, best, model, fittedTerm(function (q) { return Math.log(1 + q.g / 100); }))),
+          age_fitted: factor(heldOut(pts, best, model, fittedTerm(function (q) { return Math.min(q.years, 5); })))
+        }
       }
     };
   }
@@ -176,7 +190,7 @@
     });
   }
 
-  // ---- farm plans -------------------------------------------------------------------------------
+  // ---- farm plans
   // Planning figures for one transaction, in dollars.
   var GAS = {
     'Ethereum': 4, 'Bitcoin': 2.5, 'Solana': 0.02, 'Tron': 1.2, 'Binance': 0.1, 'Base': 0.05, 'Arbitrum': 0.08,
@@ -204,6 +218,9 @@
   // What one tracked activity looks like, by the kind of business the record says it is.
   function playbook(category) {
     var c = (category || '').toLowerCase(), f = family(category);
+    if (/curator|allocator/.test(c)) return { kind: 'vault', core: 'Deposit {cap} of USDC into the largest vault {name} curates on {chain} (its site lists the vaults it runs on lending markets such as Morpho or Euler) and keep the share token', second: 'Check the vault allocation page: go on only if no single market holds more than half of it', weekly: 'check the vault APY and allocation and exit if one market takes over half', txs: 2 };
+    if (/basis/.test(c)) return { kind: 'vault', core: 'Mint {cap} of the delta-neutral dollar of {name} on {chain} and stake it where its points accrue', second: 'Note the funding rate on its dashboard: the yield comes from it, so a negative week is the exit signal', weekly: 'check the funding rate and the redemption queue', txs: 3 };
+    if (/prediction/.test(c)) return { kind: 'trading', core: 'Deposit {cap} of USDC on {name} on {chain}', second: 'Buy $25 of shares in 4 markets that resolve within the hold window, so volume and resolved positions are recorded', weekly: 'buy $25 in one new market and claim resolved ones', txs: 6 };
     if (/card/.test(c)) return { kind: 'card', core: 'Load {cap} onto a {name} card or account on {chain}', second: 'Make 5 card payments of $10, so spending is recorded besides the balance', weekly: 'make one $10 payment', txs: 6 };
     if (/payment/.test(c)) return { kind: 'payments', core: 'Open a {cap} balance or channel on {name} from {chain}', second: 'Send 5 payments of $5 to a second wallet you control', weekly: 'send one $5 payment', txs: 6 };
     if (/cedefi/.test(c)) return { kind: 'earn', core: 'Subscribe {cap} to {name}\'s main earn product on {chain}, completing its account checks', second: 'Move $100 into a second product it offers', weekly: 'check the balance and re-subscribe if a term ends', txs: 2 };
@@ -238,7 +255,9 @@
     var bridge = ch.chain === 'Ethereum' || ch.chain === 'Bitcoin' ? 0 : fee <= 0.1 ? 1 : 3;
     var buffer = Math.max(1, Math.ceil(fee * 12));
     var fees = Math.round((fee * (4 + pb.txs + weeks) + bridge) * 100) / 100;
-    var forgone = Math.round(cap * model.stable_apr * weeks / 52 * 100) / 100;
+    // A vault, loan, RWA or staking position earns about the stable rate itself: no yield is forgone.
+    var earns = /^(vault|lending|rwa|stablecoin|earn|staking)$/.test(pb.kind);
+    var forgone = earns ? 0 : Math.round(cap * model.stable_apr * weeks / 52 * 100) / 100;
     var bps = cap / p.tvl_usd * 1e4;
     var est = Math.round(s.per_1k * cap / 10) / 100;
     var breakEvenPool = Math.round((fees + forgone) / cap * p.tvl_usd);
@@ -258,7 +277,7 @@
       { when: day(0), do: fill(pb.core), cost: usd(cap) + ' at risk, ' + usd(fee * 2) + ' of fees', time: '10 minutes' },
       { when: day(1), do: fill(pb.second), cost: usd(fee * (pb.txs - 1)) + ' of fees', time: '15 minutes' },
       { when: day(7) + ' to ' + day(7 * weeks), do: 'Every 7 days for ' + weeks + ' weeks, ' + fill(pb.weekly) + ', so the wallet shows activity in every weekly snapshot', cost: usd(fee) + ' a week, ' + usd(fee * weeks) + ' in all', time: '5 minutes a week' },
-      { when: 'each check', do: 'Exit rule: withdraw early if TVL falls under ' + big(p.tvl_usd * 0.6) + ' or the 7-day change is below -20% at two weekly checks in a row; otherwise hold all ' + weeks + ' weeks. The position is ' + (bps < 0.01 ? bps.toFixed(4) : bps.toFixed(2)) + ' bps of the TVL', cost: usd(forgone) + ' of yield forgone at ' + Math.round(model.stable_apr * 100) + '% a year', time: weeks + ' weeks' },
+      { when: 'each check', do: 'Exit rule: withdraw early if TVL falls under ' + big(p.tvl_usd * 0.6) + ' or the 7-day change is below -20% at two weekly checks in a row; otherwise hold all ' + weeks + ' weeks. The position is ' + (bps < 0.01 ? bps.toFixed(4) : bps.toFixed(2)) + ' bps of the TVL', cost: earns ? 'none forgone: the position earns its own yield' : usd(forgone) + ' of yield forgone at ' + Math.round(model.stable_apr * 100) + '% a year', time: weeks + ' weeks' },
       { when: day(7 * weeks), do: 'Claim only from the link on ' + p.name + '\'s own site and never pay to claim, then withdraw. Break-even: fees and forgone yield of ' + usd(fees + forgone) + ' are covered only if the community pool is above ' + big(breakEvenPool) + '; the model\'s ' + Math.round(model.airdrop_share * 100) + '% scenario pool is ' + big(s.drop_pool), cost: usd(fee * 2) + ' to claim and withdraw', time: '20 minutes' }
     ];
     return {
@@ -280,7 +299,7 @@
     return out;
   }
 
-  // ---- the radar ---------------------------------------------------------------------------------
+  // ---- the radar
   function buildRadar(snapshot, model) {
     model = model || MODEL;
     var cal = calibrate(snapshot, model), watch = {};

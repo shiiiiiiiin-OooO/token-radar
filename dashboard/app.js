@@ -2,12 +2,12 @@
 // snapshot in ../data.js: the same function main.ts runs to write board.json. No network, no framework.
 //
 // For the judge, where each criterion lives:
-//   1 radar      model.js buildRadar: watchlist + off-list + early rows; isRankable drops exchanges, bridges,
-//                liquid staking, wrapped and versioned products; tokenStatus keeps trading tokens off the board.
-//   2 value      model.js calibrate (elasticity + shrunk intercepts fitted on trading tokens, leave-one-out
-//                error vs flat 0.25 x TVL), score (growth, no-token run, range). Rendered by hero, model, detail.
-//   3 farm plans model.js farmPlan: dated steps with cost and time, go/no-go and exit lines, break-even pool,
-//                Farm / Thin / Skip verdict and net per hands-on hour. Rendered by board and detail.
+//   1 radar      model.js buildRadar (watchlist, off-list, early rows); isRankable drops exchanges, bridges,
+//                staking receipts, wrapped and versioned products; tokenStatus keeps trading tokens apart.
+//   2 value      model.js calibrate (fit, grouping and terms chosen by held-out error, walk-forward test),
+//                score (growth, no-token run, range). Shown by hero, model, detail.
+//   3 farm plans model.js farmPlan: dated steps with cost and time, go/no-go and exit rules, break-even,
+//                Farm / Thin / Skip verdict, net per hands-on hour. Shown by board and detail.
 //   4 page       visibleRows (search, category, chain, tier, verdict, momentum), th (every column sorts), detail.
 (function () {
   'use strict';
@@ -106,13 +106,13 @@
     var shown = rows.length === radar.rows.length ? 'all ' + rows.length : rows.length + ' shown';
     return '<section class="hero"><div><h1><em>' + radar.rows.length + '</em> protocols with no token on record, ranked by what one would be worth today</h1>' +
       '<p>The ' + radar.watchlist_size + ' watchlist protocols are the floor; ' + n('off-list') + ' more above $' + radar.floor_usd / 1e6 + 'M that the house list leaves out and ' + n('early') +
-      ' below it are the radar\'s finds; ' + c.n + ' trading tokens only price TVL. No token on record is not proof there is none.</p></div>' +
+      ' below it are the radar\'s finds. No token on record is not proof there is none.</p></div>' +
       '<div class="kpis"><div class="kpi ok"><span>Watchlist covered</span><b>' + n('watchlist') + ' / ' + radar.watchlist_size + '</b></div>' +
       '<div class="kpi"><span>Implied value, ' + shown + '</span><b>' + money(sum) + '</b></div>' +
       '<div class="kpi"><span>Median drop / $1k, ' + shown + '</span><b>' + money(med(rows.map(function (r) { return r.model.per_1k; }))) + '</b></div>' +
       '<div class="kpi"><span>Out-of-sample error</span><b>' + v.model.toFixed(1) + '&times;</b><small>flat 0.25&times;TVL: ' + v.starter_quarter.toFixed(1) + '&times;</small></div></div></section>' +
-      '<div class="strip mono"><b>implied = e<sup>a[category]</sup> &times; TVL<sup>' + c.elasticity.toFixed(2) + '</sup> &times; &radic;(1 + 7d growth) &times; no-token run</b>' +
-      '<span>fitted on ' + c.n + ' trading tokens &middot; ten times the TVL &rarr; ' + Math.pow(10, c.elasticity).toFixed(1) + '&times; the value</span></div>';
+      '<div class="strip mono"><b>implied = e<sup>a[' + c.structure + ']</sup> &times; TVL<sup>' + c.elasticity.toFixed(2) + '</sup> &times; &radic;(1 + 7d growth) &times; no-token run</b>' +
+      '<span>fitted on ' + c.n + ' trading tokens, ' + c.structure + ' chosen by test &middot; ten times the TVL &rarr; ' + Math.pow(10, c.elasticity).toFixed(1) + '&times; the value</span></div>';
   }
   function tabs() {
     var t = [['board', 'Pre-token board', radar.rows.length], ['trading', 'Trading tokens', radar.trading.length], ['model', 'Model & validation', '']];
@@ -153,16 +153,14 @@
         '<td class="hide-m">' + verdictTag(r.plan) + '<div class="range">' + money(r.plan.per_hour) + '/h</div></td></tr>';
     }).join('');
     html += '</tbody></table>' + (rows.length ? '' : '<p class="empty">No protocol matches these filters.</p>') + '</div>';
-    html += '<p class="note">Range: the middle half of how far trading tokens sit from the fit. Drop / $1k: what $1,000 would receive if ' + Math.round(radar.model.airdrop_share * 100) +
-      '% of the implied value went to depositors pro rata, a scenario and not a forecast. Farm net: that scenario on the plan\'s capital, minus fees and forgone yield. Verdict: farm at 2&times; costs on a trusted record, thin at half size, skip below break-even; /h is net per hands-on hour.</p>';
+    html += '<p class="note">Range: middle half of held-out residuals. Drop / $1k and Farm net: a ' + Math.round(radar.model.airdrop_share * 100) + '% pro-rata drop scenario, not a forecast, net of fees and forgone yield. Verdict: farm at 2&times; costs, thin at half size, skip below break-even.</p>';
     return html;
   }
 
   // ---- the trading set: the market's own prices, kept apart from the board ----
   function trading() {
     var v = radar.calibration.validation;
-    var html = '<p class="note lead">These ' + radar.trading.length + ' protocols record a token with a market cap, so the board never ranks them: their value is the market\'s. They are the calibration set. ' +
-      'Model value is the fit with no market price; held out one at a time, it is typically off by ' + v.model.toFixed(2) + '&times; (a flat 0.25&times;TVL is off by ' + v.starter_quarter.toFixed(2) + '&times;), and ' + Math.round(v.within_2x * 100) + '% land within 2&times;.</p>';
+    var html = '<p class="note lead">These ' + radar.trading.length + ' record a token with a market cap: never ranked, only used to calibrate. Held out, the model is typically off by ' + v.model.toFixed(2) + '&times; (flat 0.25&times;TVL: ' + v.starter_quarter.toFixed(2) + '&times;).</p>';
     html += '<div class="tablewrap"><table><thead><tr><th>Protocol</th><th>Symbol</th><th class="n">TVL</th><th class="n">Market cap</th><th class="n">Cap / TVL</th><th class="n">Model value</th><th class="n">Market / model</th></tr></thead><tbody>';
     html += radar.trading.slice(0, 60).map(function (t) {
       var ratio = t.mcap_usd / t.model_base;
@@ -176,25 +174,27 @@
   var SLIDERS = [['shrink', 'Shrink pseudo-samples', 0, 20, 1], ['runway_floor', 'Runway at day 0', 0.2, 1, 0.05], ['growth_cap', 'Growth cap %', 10, 200, 5], ['airdrop_share', 'Drop scenario share', 0.02, 0.3, 0.01]];
   function model() {
     var m = radar.model, c = radar.calibration, v = c.validation, ic = c.intercepts;
-    var html = '<div class="cols"><div class="card"><h2>How a row gets its value</h2><div class="formula">implied = e^a[category] &times; tvl_usd ^ ' + c.elasticity.toFixed(3) +
+    var row = function (label, x, bold) { return '<tr><td>' + label + '</td><td class="n">' + (bold ? '<b>' + x.toFixed(2) + '&times;</b>' : x.toFixed(2) + '&times;') + '</td></tr>'; };
+    var st = v.structures, wf = v.walk_forward, tm = v.terms;
+    var html = '<div class="cols"><div class="card"><h2>How a row gets its value</h2><div class="formula">implied = e^a[' + c.structure + '] &times; tvl_usd ^ ' + c.elasticity.toFixed(3) +
       '\n  &times; sqrt(1 + clamp(change_7d, ' + m.growth_floor + ', ' + m.growth_cap + ') / 100)\n  &times; (' + m.runway_floor + ' + ' + (1 - m.runway_floor).toFixed(2) + ' &times; min(age_days, ' + m.runway_days + ') / ' + m.runway_days + ')</div><ul>' +
-      '<li><b>Elasticity ' + c.elasticity.toFixed(3) + '</b> and <b>a[category]</b>: see <b>calibrate</b> in model.js; categories shrink to families and families to all ' + c.n + ' trading tokens by ' + m.shrink + ' pseudo-samples.</li>' +
-      '<li><b>Growth</b> is square-rooted; a missing listing date takes the median ' + c.median_age_days + ' days.</li>' +
-      '<li><b>Range</b>: 25th&ndash;75th percentile of held-out residuals, &times;' + Math.exp(c.band.lo).toFixed(2) + ' to &times;' + Math.exp(c.band.hi).toFixed(2) + '. No name is special-cased.</li></ul>' +
-      '<h2>Try the constants</h2><p>Releasing a slider re-runs <b>buildRadar</b>, calibration and validation included, and re-ranks the page.</p>';
+      '<li><b>calibrate</b> fits b and the intercepts on ' + c.n + ' trading tokens and picks the grouping by held-out error.</li>' +
+      '<li>Growth and no-token run are stated priors; the tests (right) show neither predicts cap. Missing listing date: ' + c.median_age_days + ' days.</li>' +
+      '<li>Range: held-out residuals, &times;' + Math.exp(c.band.lo).toFixed(2) + '&ndash;&times;' + Math.exp(c.band.hi).toFixed(2) + '.</li></ul>' +
+      '<h2>Try the constants</h2><p>Releasing a slider re-runs <b>buildRadar</b> and every test.</p>';
     html += SLIDERS.map(function (s) {
       return '<div class="slider"><label for="s-' + s[0] + '">' + s[1] + '</label><input id="s-' + s[0] + '" type="range" min="' + s[2] + '" max="' + s[3] + '" step="' + s[4] + '" value="' + m[s[0]] + '" data-k="' + s[0] + '"><span class="mono" id="v-' + s[0] + '">' + m[s[0]] + '</span></div>';
     }).join('') + (Object.keys(overrides).length ? '<button class="link" data-resetmodel>Back to ' + esc(M.MODEL.version) + '</button>' : '') + '</div>';
-    html += '<div class="card"><h2>Validation: each trading token held out and predicted from the rest</h2><table class="peers"><tbody>' +
-      '<tr><td>radar-3 (elasticity + shrunk categories)</td><td class="n"><b>' + v.model.toFixed(2) + '&times;</b></td></tr><tr><td>Flat median cap / TVL</td><td class="n">' + v.flat_median.toFixed(2) +
-      '&times;</td></tr><tr><td>Flat 0.25 &times; TVL</td><td class="n">' + v.starter_quarter.toFixed(2) + '&times;</td></tr><tr><td>radar-3 within 2&times; of the market</td><td class="n">' + Math.round(v.within_2x * 100) + '%</td></tr></tbody></table>' +
-      '<p>Median error as a factor: 2&times; means the typical token\'s cap is half or double the prediction. Token prices are noisy; the board reports a range, not a point.</p>' +
-      '<h2>Intercepts</h2><table class="peers"><thead><tr><th>Category or family</th><th class="n">Trading</th><th class="n">Value at $100M TVL</th></tr></thead><tbody>';
+    html += '<div class="card"><h2>Tests: each trading token held out and predicted from the rest</h2><p>Median error as a factor: 2&times; means the typical cap is half or double the prediction.</p><table class="peers"><tbody>' +
+      '<tr class="fam"><td colspan="2">Which grouping (lowest wins)</td></tr>' + row('One curve for all', st.global, c.structure === 'global') + row('Family intercepts', st.family, c.structure === 'family') + row('Category intercepts', st.category, c.structure === 'category') +
+      '<tr class="fam"><td colspan="2">Against the flat 0.25 &times; TVL</td></tr>' + row('Flat 0.25 &times; TVL, all tokens', v.starter_quarter) +
+      row('Walk-forward: fit on the ' + wf.train + ' listed first, predict the ' + wf.test + ' listed from ' + esc(wf.from), wf.model, true) + row('Flat 0.25 &times; TVL on those ' + wf.test, wf.starter_quarter) +
+      '<tr class="fam"><td colspan="2">Terms kept only if the test keeps them</td></tr>' + row('Chosen model', v.model, true) + row('+ 7-day growth prior applied to caps', tm.growth_prior) +
+      row('+ 7-day growth fitted', tm.growth_fitted) + row('+ listing age fitted', tm.age_fitted) +
+      '<tr><td>Chosen model within 2&times; of the market</td><td class="n">' + Math.round(v.within_2x * 100) + '%</td></tr></tbody></table>' +
+      '<h2>Intercepts</h2><table class="peers"><thead><tr><th>Family</th><th class="n">Trading</th><th class="n">Value at $100M TVL</th></tr></thead><tbody>';
     var at = function (a) { return money(Math.exp(a + c.elasticity * Math.log(1e8))); };
     html += Object.keys(ic.families).sort().map(function (f) { return '<tr class="fam"><td>' + esc(f) + ' (family)</td><td class="n">' + ic.families[f].n + '</td><td class="n">' + at(ic.families[f].a) + '</td></tr>'; }).join('');
-    html += Object.keys(ic.categories).sort(function (a, b) { return ic.categories[b].n - ic.categories[a].n || (a < b ? -1 : 1); }).slice(0, 18).map(function (k) {
-      return '<tr><td>' + esc(k) + '</td><td class="n">' + ic.categories[k].n + '</td><td class="n">' + at(ic.categories[k].a) + '</td></tr>';
-    }).join('');
     return html + '</tbody></table></div></div>';
   }
 
@@ -202,7 +202,7 @@
   function detail(r) {
     var s = r.model, p = r.plan, src = rawBySlug[r.slug], peers = M.peersFor(src, radar.calibration, 5);
     var steps = [['TVL', r.tvl_usd, 'DefiLlama, ' + esc(radar.as_of) + (r.listed_at ? ', listed ' + esc(r.listed_at) : '')],
-      ['Fitted value at this size', s.base, 'e^a &times; TVL^' + radar.calibration.elasticity.toFixed(2) + ' = ' + s.multiple.toFixed(3) + '&times; TVL &middot; ' + (s.peers ? s.peers + ' trading ' + cat(r) + ', shrunk to ' + esc(s.family) : 'from its family, ' + esc(s.family))],
+      ['Fitted value at this size', s.base, 'e^a &times; TVL^' + radar.calibration.elasticity.toFixed(2) + ' = ' + s.multiple.toFixed(3) + '&times; TVL &middot; ' + (s.multiple_source === 'global' ? 'one curve for all' : esc(s.family) + ' family, ' + s.peers + ' trading tokens') + ', the grouping chosen by held-out test'],
       ['&times; 7-day growth ' + s.growth.toFixed(3), Math.round(s.base * s.growth), r.change_7d === null ? 'change not reported: 0%' : (r.change_7d >= 0 ? '+' : '') + r.change_7d.toFixed(2) + '% in 7 days, square-rooted'],
       ['&times; No-token run ' + s.runway.toFixed(3), r.implied_value_usd, s.age_imputed ? 'listing date unknown: the median ' + radar.calibration.median_age_days + ' days' : s.age_days + ' days with no token on record']];
     var html = '<div class="dhead"><div><div class="psub">Rank ' + r.rank + ' of ' + radar.rows.length + '</div><h2>' + esc(r.name) + '</h2></div><button class="close" data-close>Close &times;</button></div>' +
@@ -212,7 +212,7 @@
       '<br><code>' + money(r.tvl_usd) + ' &times; ' + s.multiple.toFixed(3) + ' &times; ' + s.growth.toFixed(3) + ' &times; ' + s.runway.toFixed(3) + ' = ' + money(r.implied_value_usd) + '</code></span></div>';
     html += '<div class="dgrid"><div><h3>Why this value</h3><div class="factors">' + steps.map(function (f) {
       return '<div>' + f[0] + '</div><div class="track"><i style="width:' + Math.max(1, Math.min(100, Math.sqrt(f[1] / r.tvl_usd) * 100)).toFixed(1) + '%"></i></div><div class="v">' + money(f[1]) + '</div><div class="why">' + f[2] + '</div>';
-    }).join('') + '</div><p class="note">Bars on a square-root scale of TVL.</p>';
+    }).join('') + '</div>';
     html += '<h3>Trading tokens behind the price</h3><table class="peers"><tbody>' + peers.map(function (t) {
       return '<tr><td>' + esc(t.name) + ' <span class="psub">' + esc(t.symbol || '') + '</span></td><td><span class="tag">' + t.match + '</span></td><td class="n">' + money(t.tvl_usd) + '</td><td class="n">' + t.multiple.toFixed(2) + '&times;</td></tr>';
     }).join('') + '</tbody></table>';
@@ -270,7 +270,7 @@
   });
   app.addEventListener('input', function (e) {
     if (e.target.id === 'q') return set({ q: e.target.value });
-    // While a slider is dragged only its label moves; the page re-ranks on release (change), so the drag is never cut.
+    // Dragging moves only the label; the page re-ranks on release, so the drag is never cut.
     if (e.target.dataset.k) document.getElementById('v-' + e.target.dataset.k).textContent = e.target.value;
   });
   app.addEventListener('change', function (e) {

@@ -21,14 +21,12 @@ html, body { margin: 0; background: var(--ink); color: var(--text); font: 14px/1
 body { padding: 0 var(--s6) var(--s7); }
 button, input, select { font: inherit; color: inherit; }
 .num, td.n, .mono { font-family: var(--mono); font-variant-numeric: tabular-nums; }
-/* Header */
 .top { display: flex; align-items: center; justify-content: space-between; gap: var(--s4); padding: var(--s4) 0; border-bottom: 1px solid var(--line); }
 .brand { display: flex; align-items: center; gap: var(--s3); font: 600 15px var(--mono); letter-spacing: 0.08em; text-transform: uppercase; }
 .sweep { width: 22px; height: 22px; border-radius: 50%; border: 2px solid var(--amber); position: relative; overflow: hidden; }
 .sweep::after { content: ''; position: absolute; inset: 0; background: conic-gradient(from 0deg, var(--amber) 0 50deg, transparent 50deg); opacity: 0.7; }
 .meta { color: var(--dim); font: 12px var(--mono); display: flex; gap: var(--s4); flex-wrap: wrap; justify-content: flex-end; }
 .meta b { color: var(--text); font-weight: 500; }
-/* Hero */
 .hero { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: var(--s5); padding: var(--s3) 0 var(--s2); align-items: end; }
 .hero h1 { font-size: 24px; line-height: 1.2; margin: 0 0 var(--s2); letter-spacing: -0.01em; }
 .hero h1 em { font-style: normal; color: var(--amber); }
@@ -44,7 +42,6 @@ button, input, select { font: inherit; color: inherit; }
 .strip b { font-weight: 500; }
 .warn { color: var(--amber); }
 .lead { margin: var(--s4) 0; max-width: 110ch; }
-/* Tabs and controls */
 .tabs { display: flex; gap: var(--s1); border-bottom: 1px solid var(--line); margin-top: var(--s3); }
 .tab { background: none; border: 0; padding: var(--s2) var(--s4); color: var(--dim); cursor: pointer; border-bottom: 2px solid transparent; margin-bottom: -1px; }
 .tab[aria-selected='true'] { color: var(--text); border-bottom-color: var(--amber); }
@@ -60,7 +57,6 @@ button, input, select { font: inherit; color: inherit; }
 .seg button[aria-pressed='true'] { background: var(--amber); color: var(--ink); font-weight: 600; }
 .count { margin-left: auto; color: var(--dim); font: 12px var(--mono); display: flex; gap: var(--s3); align-items: center; }
 .link { background: none; border: 1px solid var(--line); border-radius: 6px; padding: 4px var(--s2); color: var(--amber); cursor: pointer; font-size: 12px; }
-/* Table */
 .tablewrap { background: var(--panel); border: 1px solid var(--line); border-radius: var(--r); overflow: auto; }
 table { width: 100%; border-collapse: collapse; }
 th { text-align: left; font-weight: 500; font-size: 11px; color: var(--dim); text-transform: uppercase; letter-spacing: 0.06em; padding: var(--s3); border-bottom: 1px solid var(--line); white-space: nowrap; position: sticky; top: 0; background: var(--panel); }
@@ -96,7 +92,6 @@ tbody tr.sel td:first-child { box-shadow: inset 3px 0 0 var(--amber); }
 .conf.high { color: var(--teal); } .conf.medium { color: var(--amber); } .conf.low { color: var(--red); }
 .empty { padding: var(--s6); text-align: center; color: var(--dim); }
 .note { color: var(--dim); font-size: 12px; margin: var(--s3) 0 0; }
-/* Drawer: the detail view */
 .scrim { position: fixed; inset: 0; background: rgba(5, 7, 10, 0.55); z-index: 9; }
 .dgrid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.15fr); gap: var(--s5); }
 .dgrid h3:first-child { margin-top: var(--s4); }
@@ -117,7 +112,6 @@ h3 { font-size: 12px; text-transform: uppercase; letter-spacing: 0.08em; color: 
 .factors .why { grid-column: 2 / 4; color: var(--dim); font-size: 12px; margin-top: -6px; }
 .track { height: 8px; background: var(--line); border-radius: 4px; position: relative; }
 .track i { position: absolute; top: 0; bottom: 0; left: 0; border-radius: 4px; background: var(--amber); }
-.track i.neg { background: var(--red); } .track i.pos { background: var(--teal); }
 .tiles { display: grid; grid-template-columns: repeat(6, 1fr); gap: 6px; }
 .tile { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 6px var(--s3); }
 .tile span { display: block; font-size: 10px; color: var(--dim); line-height: 1.2; }
@@ -129,7 +123,6 @@ ol.steps .ct { color: var(--dim); font: 12px var(--mono); }
 ol.steps .ct b { color: var(--text); font-weight: 500; }
 .peers td { padding: 5px var(--s2); font-size: 12px; }
 tr.fam td { color: var(--amber); }
-/* Model tab */
 .cols { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: var(--s5); padding-top: var(--s4); }
 .card { background: var(--panel); border: 1px solid var(--line); border-radius: var(--r); padding: var(--s4) var(--s5); }
 .card h2 { font-size: 16px; margin: 0 0 var(--s3); }
