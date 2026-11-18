@@ -300,10 +300,45 @@
   }
 
   // ---- the radar
+  // Why a protocol is not on the board: every one of the snapshot's protocols gets exactly one reason.
+  function reason(p, watch, floor) {
+    if (watch[p.slug]) return 'watchlist';
+    var s = tokenStatus(p), c = p.category || '';
+    if (s === 'trading') return 'token trades';
+    if (s === 'recorded') return 'token on record, no cap';
+    if (/bridge/i.test(c)) return 'bridge';
+    if (/^(liquid staking|liquid restaking|restaked btc)$/i.test(c)) return 'staking receipt';
+    if (/cex|exchange|otc/i.test(c)) return 'exchange';
+    if (VERSIONED.test(p.name)) return 'versioned release';
+    if (WRAPPED.test(p.name)) return 'wrapped or staked';
+    return p.tvl_usd >= floor ? 'off-list' : 'early';
+  }
+  // Seeded generator (mulberry32): the same refits on every run, so the output stays byte-identical.
+  function rng(seed) {
+    return function () { seed = seed + 0x6D2B79F5 | 0; var t = Math.imul(seed ^ seed >>> 15, 1 | seed); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; };
+  }
+  // Rank range: refit on 100 bootstrap resamples of the trading tokens, re-rank, keep the 10th..90th percentile.
+  function rankRanges(rows, cal, model) {
+    var draw = rng(20261114), pts = cal.points, seen = rows.map(function () { return []; });
+    for (var k = 0; k < 100; k++) {
+      var sample = pts.map(function () { return pts[Math.floor(draw() * pts.length)]; }), f = fit(sample, cal.structure, model.shrink, model);
+      rows.map(function (r, i) { return { i: i, v: (interceptFor(f, r.category).a + f.b * Math.log(r.tvl_usd)) + Math.log(r.model.growth * r.model.runway) }; })
+        .sort(function (a, b) { return b.v - a.v || a.i - b.i; }).forEach(function (o, j) { seen[o.i].push(j + 1); });
+    }
+    rows.forEach(function (r, i) { r.rank_range = [Math.round(quantile(seen[i], 0.1)), Math.round(quantile(seen[i], 0.9))]; });
+  }
+  // FNV-1a over every row's slug, rank and value: main.ts puts it in data.js, the page recomputes and compares.
+  function digest(rows) {
+    var h = 0x811c9dc5, s = rows.map(function (r) { return r.slug + '|' + r.rank + '|' + r.implied_value_usd; }).join('\n');
+    for (var i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 16777619); }
+    return ('0000000' + (h >>> 0).toString(16)).slice(-8);
+  }
+
   function buildRadar(snapshot, model) {
     model = model || MODEL;
-    var cal = calibrate(snapshot, model), watch = {};
+    var cal = calibrate(snapshot, model), watch = {}, reasons = {};
     snapshot.watchlist.forEach(function (s) { watch[s] = true; });
+    snapshot.protocols.forEach(function (p) { var r = reason(p, watch, snapshot.floor_usd); reasons[r] = (reasons[r] || 0) + 1; });
     var rows = snapshot.protocols.filter(function (p) { return watch[p.slug] || isRankable(p); }).map(function (p) {
       var s = score(p, snapshot.as_of, cal, model), plan = farmPlan(p, s, model);
       return {
@@ -316,6 +351,7 @@
     });
     rows.sort(function (a, b) { return b.implied_value_usd - a.implied_value_usd || bySlug(a, b); });
     rows.forEach(function (r, i) { r.rank = i + 1; });
+    rankRanges(rows, cal, model);
     var trading = cal.points.map(function (q) {
       return { slug: q.slug, name: q.name, category: q.cat, symbol: q.symbol, tvl_usd: q.tvl, mcap_usd: q.mcap,
         market_multiple: round4(q.mcap / q.tvl), model_base: Math.exp(interceptFor(cal.intercepts, q.cat).a + cal.elasticity * q.x) };
@@ -323,13 +359,13 @@
     return {
       as_of: snapshot.as_of, source: snapshot.source, floor_usd: snapshot.floor_usd, model: model, calibration: cal,
       watchlist_size: snapshot.watchlist.length, rows: rows, trading: trading, universe: snapshot.protocols.length,
-      recorded_size: snapshot.protocols.filter(function (p) { return tokenStatus(p) === 'recorded'; }).length
+      reasons: reasons, digest: digest(rows)
     };
   }
 
   root.RadarModel = {
     MODEL: MODEL, family: family, tokenStatus: tokenStatus, isRankable: isRankable, ageDays: ageDays,
     calibrate: calibrate, score: score, peersFor: peersFor, farmPlan: farmPlan, stepStrings: stepStrings,
-    buildRadar: buildRadar, usd: usd, big: big
+    buildRadar: buildRadar, digest: digest, usd: usd
   };
 })(typeof globalThis !== 'undefined' ? globalThis : this);

@@ -26,7 +26,7 @@ interface Protocol {
 }
 interface Snapshot { as_of: string; source: string; floor_usd: number; protocols: Protocol[]; watchlist: string[] }
 interface Row { rank: number; slug: string; name: string; implied_value_usd: number; farm_steps: string[]; [k: string]: unknown }
-interface Radar { rows: Row[]; trading: unknown[]; calibration: { n: number; elasticity: number; validation: { model: number; starter_quarter: number } }; [k: string]: unknown }
+interface Radar { rows: Row[]; trading: unknown[]; digest: string; calibration: { n: number; elasticity: number; validation: { model: number; starter_quarter: number } }; [k: string]: unknown }
 
 function fail(message: string, code = 1): never {
   process.stderr.write(`token radar: ${message}\n`);
@@ -135,7 +135,8 @@ if (issue !== null) fail(`the model wrote a board the gate refuses: ${issue}`);
 mkdirSync(out, { recursive: true });
 writeFileSync(join(out, 'board.json'), `${JSON.stringify({ model: radar.model, as_of: snapshot.as_of, rows: radar.rows })}\n`);
 // The page re-runs the model on the snapshot itself, so data.js carries the input, not the answer.
-writeFileSync(join(out, 'data.js'), `window.SNAPSHOT=${JSON.stringify(snapshot)};\n`);
+// BOARD_DIGEST lets the page prove it shows the same board: it recomputes the digest and compares.
+writeFileSync(join(out, 'data.js'), `window.SNAPSHOT=${JSON.stringify(snapshot)};\nwindow.BOARD_DIGEST=${JSON.stringify(radar.digest)};\n`);
 
 copyFiles(join(here, 'dashboard'), join(out, 'dashboard'));
 const shots = copyFiles(join(here, 'screenshots'), join(out, 'screenshots'));
