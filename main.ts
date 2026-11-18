@@ -26,7 +26,7 @@ interface Protocol {
 }
 interface Snapshot { as_of: string; source: string; floor_usd: number; protocols: Protocol[]; watchlist: string[] }
 interface Row { rank: number; slug: string; name: string; implied_value_usd: number; farm_steps: string[]; [k: string]: unknown }
-interface Radar { rows: Row[]; trading: unknown[]; digest: string; calibration: { n: number; elasticity: number; validation: { model: number; starter_quarter: number } }; [k: string]: unknown }
+interface Radar { rows: Row[]; digest: string; calibration: { n: number; elasticity: number; validation: { model: number; starter_quarter: number } }; [k: string]: unknown }
 
 function fail(message: string, code = 1): never {
   process.stderr.write(`token radar: ${message}\n`);

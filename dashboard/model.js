@@ -110,7 +110,49 @@
       return p.y - interceptFor(f, p.cat).a - f.b * p.x - (extra ? extra(p, rest, f) : 0);
     });
   }
+  // Spearman rank correlation: do held-out predictions order the caps the way the market does?
+  function spearman(a, b) {
+    var rk = function (v) { var o = v.map(function (x, i) { return [x, i]; }).sort(function (p, q) { return p[0] - q[0]; }), r = []; o.forEach(function (x, j) { r[x[1]] = j; }); return r; };
+    var ra = rk(a), rb = rk(b), n = a.length, d = 0;
+    for (var i = 0; i < n; i++) d += (ra[i] - rb[i]) * (ra[i] - rb[i]);
+    return 1 - 6 * d / (n * (n * n - 1));
+  }
   function factor(errs) { return round4(Math.exp(median(errs.map(Math.abs)))); }   // 2.0 = "typically off by 2x"
+  function growthOf(g) { return Math.sqrt(1 + g / 100); }
+  function runwayOf(days, model) { return model.runway_floor + (1 - model.runway_floor) * Math.min(days, model.runway_days) / model.runway_days; }
+
+  // Launch odds: logistic regression of "records a token" on ln TVL, years tracked (and whether that is
+  // known) and 7-day growth, over every protocol that could carry a token of its own. Newton steps.
+  function features(p, asOf, medAge, model) {
+    var age = ageDays(asOf, p.listed_at), g = clamp(p.change_7d === null ? 0 : p.change_7d, model.growth_floor, model.growth_cap);
+    return [1, Math.log(p.tvl_usd) - 18, Math.min(age === null ? medAge : age, 1825) / 365, age === null ? 1 : 0, Math.log(1 + g / 100)];
+  }
+  function logit(X, y) {
+    var k = X[0].length, w = X[0].map(function () { return 0; }), a, b, r;
+    for (var it = 0; it < 12; it++) {
+      var H = w.map(function () { return w.map(function () { return 0; }); }), gr = w.map(function () { return 0; });
+      X.forEach(function (x, i) {
+        var q = 1 / (1 + Math.exp(-x.reduce(function (s, v, j) { return s + v * w[j]; }, 0)));
+        for (var aa = 0; aa < k; aa++) { gr[aa] += (y[i] - q) * x[aa]; for (var bb = 0; bb < k; bb++) H[aa][bb] += q * (1 - q) * x[aa] * x[bb]; }
+      });
+      for (a = 0; a < k; a++) H[a][a] += 0.01;
+      // Gauss-Jordan solve H d = gr, then step.
+      for (a = 0; a < k; a++) { for (r = 0; r < k; r++) if (r !== a) { var f = H[r][a] / H[a][a]; for (b = 0; b < k; b++) H[r][b] -= f * H[a][b]; gr[r] -= f * gr[a]; } }
+      for (a = 0; a < k; a++) w[a] += gr[a] / H[a][a];
+    }
+    return w;
+  }
+  function oddsOf(w, x) { return 1 / (1 + Math.exp(-x.reduce(function (s, v, j) { return s + v * w[j]; }, 0))); }
+  function launchModel(snapshot, medAge, model) {
+    var set = snapshot.protocols.filter(function (p) { return p.tvl_usd > 0 && !NOT_RANKED.test(p.category || '') && !VERSIONED.test(p.name) && !WRAPPED.test(p.name); })
+      .sort(bySlug), X = set.map(function (p) { return features(p, snapshot.as_of, medAge, model); }), y = set.map(function (p) { return tokenStatus(p) === 'pre-token' ? 0 : 1; });
+    var hit = 0, rate = mean(y);
+    for (var fold = 0; fold < 10; fold++) {   // 10-fold: every protocol predicted by a fit that never saw it
+      var tr = X.filter(function (_, i) { return i % 10 !== fold; }), w = logit(tr, y.filter(function (_, i) { return i % 10 !== fold; }));
+      X.forEach(function (x, i) { if (i % 10 === fold && (oddsOf(w, x) >= 0.5) === (y[i] === 1)) hit++; });
+    }
+    return { w: logit(X, y), n: set.length, accuracy: round4(hit / set.length), base_rate: round4(Math.max(rate, 1 - rate)) };
+  }
   // A term fitted on the residuals of the rest: its least-squares coefficient on one feature.
   function fittedTerm(feat) {
     return function (p, rest, f) {
@@ -128,29 +170,35 @@
     snapshot.protocols.forEach(function (p) {
       if (tokenStatus(p) !== 'trading' || !(p.tvl_usd > 0)) return;
       var c = p.category || 'Uncategorised', age = ageDays(snapshot.as_of, p.listed_at);
-      pts.push({ slug: p.slug, name: p.name, cat: c, fam: family(c), x: Math.log(p.tvl_usd), y: Math.log(p.mcap_usd), tvl: p.tvl_usd, mcap: p.mcap_usd, symbol: p.symbol,
-        g: clamp(p.change_7d === null ? 0 : p.change_7d, model.growth_floor, model.growth_cap), years: (age === null ? medAge : age) / 365, listed: p.listed_at });
+      var g = clamp(p.change_7d === null ? 0 : p.change_7d, model.growth_floor, model.growth_cap), days = age === null ? medAge : age;
+      // y is ln(cap) less the growth and run priors, so every test below scores the formula score() uses.
+      var pr = Math.log(growthOf(g) * runwayOf(days, model));
+      pts.push({ slug: p.slug, name: p.name, cat: c, fam: family(c), x: Math.log(p.tvl_usd), ly: Math.log(p.mcap_usd), y: Math.log(p.mcap_usd) - pr, pr: pr,
+        tvl: p.tvl_usd, mcap: p.mcap_usd, symbol: p.symbol, g: g, years: days / 365, listed: p.listed_at });
     });
     var structures = {};
     ['global', 'family', 'category'].forEach(function (s) { structures[s] = heldOut(pts, s, model); });
+    var raw = pts.map(function (p) { return Object.assign({}, p, { y: p.ly }); });
     var best = Object.keys(structures).sort(function (a, b) { return factor(structures[a]) - factor(structures[b]); })[0];
     var resid = structures[best], ic = fit(pts, best, model.shrink, model);
     // Walk-forward: fit on the tokens DefiLlama listed first, predict the half it listed later.
     var dated = pts.filter(function (p) { return p.listed; }).sort(function (a, b) { return a.listed < b.listed ? -1 : a.listed > b.listed ? 1 : 0; });
     var half = dated.length >> 1, wf = fit(dated.slice(0, half), best, model.shrink, model), later = dated.slice(half);
+    var starter = function (p) { return p.ly - p.x - Math.log(0.25); };
     return {
       n: pts.length, elasticity: round4(ic.b), intercepts: ic, points: pts, structure: best, median_age_days: medAge,
-      band: { lo: quantile(resid, 0.25), hi: quantile(resid, 0.75) },
+      band: { lo: quantile(resid, 0.25), hi: quantile(resid, 0.75) }, launch: launchModel(snapshot, medAge, model),
       validation: {
         model: factor(resid),
-        starter_quarter: factor(pts.map(function (p) { return p.y - p.x - Math.log(0.25); })),
-        within_2x: round4(resid.filter(function (e) { return Math.abs(e) <= Math.log(2); }).length / pts.length),
+        starter_quarter: factor(pts.map(starter)),
+        within_3x: round4(resid.filter(function (e) { return Math.abs(e) <= Math.log(3); }).length / pts.length),
+        rank_corr: round4(spearman(pts.map(function (p, i) { return p.ly - resid[i]; }), pts.map(function (p) { return p.ly; }))),
         structures: { global: factor(structures.global), family: factor(structures.family), category: factor(structures.category) },
         walk_forward: { train: half, test: later.length, from: later.length ? later[0].listed : null,
           model: factor(later.map(function (p) { return p.y - interceptFor(wf, p.cat).a - wf.b * p.x; })),
-          starter_quarter: factor(later.map(function (p) { return p.y - p.x - Math.log(0.25); })) },
+          starter_quarter: factor(later.map(starter)) },
         terms: {
-          growth_prior: factor(heldOut(pts, best, model, function (p) { return 0.5 * Math.log(1 + p.g / 100); })),
+          no_priors: factor(heldOut(raw, best, model)),
           growth_fitted: factor(heldOut(pts, best, model, fittedTerm(function (q) { return Math.log(1 + q.g / 100); }))),
           age_fitted: factor(heldOut(pts, best, model, fittedTerm(function (q) { return Math.min(q.years, 5); })))
         }
@@ -162,15 +210,15 @@
   function score(p, asOf, cal, model) {
     var age = ageDays(asOf, p.listed_at);
     var g = clamp(p.change_7d === null ? 0 : p.change_7d, model.growth_floor, model.growth_cap);
-    var growth = Math.sqrt(1 + g / 100);
-    var runAge = age === null ? cal.median_age_days : age;
-    var runway = model.runway_floor + (1 - model.runway_floor) * Math.min(runAge, model.runway_days) / model.runway_days;
+    var growth = growthOf(g), runway = runwayOf(age === null ? cal.median_age_days : age, model);
     var ic = interceptFor(cal.intercepts, p.category);
     var base = Math.exp(ic.a + cal.elasticity * Math.log(p.tvl_usd));
-    var implied = clamp(Math.round(base * growth * runway), 1, 1e14);
+    // Value if it launches, times the odds a protocol with this record carries a token: the implied value.
+    var ifLaunch = base * growth * runway, odds = oddsOf(cal.launch.w, features(p, asOf, cal.median_age_days, model));
+    var implied = clamp(Math.round(ifLaunch * odds), 1, 1e14);
     var confidence = (age !== null ? 1 : 0) + (p.change_7d !== null ? 1 : 0) + (ic.n >= 3 ? 1 : 0);
     return {
-      as_of: asOf, implied: implied, base: Math.round(base),
+      as_of: asOf, implied: implied, base: Math.round(base), if_launch: Math.round(ifLaunch), odds: round4(odds),
       multiple: round4(base / p.tvl_usd), peers: ic.n, multiple_source: ic.source, family: family(p.category),
       growth_pct: round4(g), growth: round4(growth), runway: round4(runway), age_days: age, age_imputed: age === null,
       low: Math.max(1, Math.round(implied * Math.exp(cal.band.lo))), high: Math.round(implied * Math.exp(cal.band.hi)),
@@ -206,19 +254,19 @@
   // Farm on the main chain unless its fees would eat more than 1% of the capital; then take the
   // cheapest of the first three chains DefiLlama lists (a minor deployment rarely has a vault to farm).
   function farmChain(p, cap, txs) {
-    if (!p.chains.length) return { chain: 'its main chain', fee: DEFAULT_GAS, why: 'no chain is listed' };
+    if (!p.chains.length) return { chain: 'its own chain', fee: DEFAULT_GAS, why: 'no chain is listed' };
     var main = p.chains[0], mainFee = gasOf(main);
-    if (mainFee * txs <= cap * 0.01) return { chain: main, fee: mainFee, why: 'its main chain, where about ' + usd(mainFee * txs) + ' of fees stay under 1% of the capital' };
+    if (mainFee * txs <= cap * 0.01) return { chain: main, fee: mainFee, why: 'the first chain it lists, where about ' + usd(mainFee * txs) + ' of fees stay under 1% of the capital' };
     var best = { chain: main, fee: mainFee };
     p.chains.slice(1, 3).forEach(function (c) { if (gasOf(c) < best.fee) best = { chain: c, fee: gasOf(c) }; });
-    if (best.chain === main) return { chain: main, fee: mainFee, why: 'its main chain; its other listed chains are no cheaper' };
-    return { chain: best.chain, fee: best.fee, why: 'the main chain ' + main + ' would cost ' + usd(mainFee * txs) + ' in fees, ' + Math.round(mainFee * txs / cap * 100) + '% of the capital' };
+    if (best.chain === main) return { chain: main, fee: mainFee, why: 'the first chain it lists; the next two are no cheaper' };
+    return { chain: best.chain, fee: best.fee, why: 'on ' + main + ', the first chain it lists, fees would be ' + usd(mainFee * txs) + ', ' + Math.round(mainFee * txs / cap * 100) + '% of the capital' };
   }
 
   // What one tracked activity looks like, by the kind of business the record says it is.
   function playbook(category) {
     var c = (category || '').toLowerCase(), f = family(category);
-    if (/curator|allocator/.test(c)) return { kind: 'vault', core: 'Deposit {cap} of USDC into the largest vault {name} curates on {chain} (its site lists the vaults it runs on lending markets such as Morpho or Euler) and keep the share token', second: 'Check the vault allocation page: go on only if no single market holds more than half of it', weekly: 'check the vault APY and allocation and exit if one market takes over half', txs: 2 };
+    if (/curator|allocator/.test(c)) return { kind: 'vault', core: 'Deposit {cap} of USDC into the largest vault {name} curates on {chain} (pick it from the vault list on the curator site) and keep the share token', second: 'Check the vault allocation page: go on only if no single market holds more than half of it', weekly: 'check the vault APY and allocation and exit if one market takes over half', txs: 2 };
     if (/basis/.test(c)) return { kind: 'vault', core: 'Mint {cap} of the delta-neutral dollar of {name} on {chain} and stake it where its points accrue', second: 'Note the funding rate on its dashboard: the yield comes from it, so a negative week is the exit signal', weekly: 'check the funding rate and the redemption queue', txs: 3 };
     if (/prediction/.test(c)) return { kind: 'trading', core: 'Deposit {cap} of USDC on {name} on {chain}', second: 'Buy $25 of shares in 4 markets that resolve within the hold window, so volume and resolved positions are recorded', weekly: 'buy $25 in one new market and claim resolved ones', txs: 6 };
     if (/card/.test(c)) return { kind: 'card', core: 'Load {cap} onto a {name} card or account on {chain}', second: 'Make 5 card payments of $10, so spending is recorded besides the balance', weekly: 'make one $10 payment', txs: 6 };
@@ -245,9 +293,9 @@
 
   // A plan from the protocol's own record: capital from its TVL and age, the chain from its fees,
   // the hold from how long it has run, the go/no-go and exit lines from its TVL, the actions from its category.
-  function farmPlan(p, s, model) {
-    var cap = p.tvl_usd >= 1e9 ? 1000 : p.tvl_usd >= 1e8 ? 500 : 250;
-    if (s.age_days !== null && s.age_days < 120) cap = cap / 2;   // young code: halve the size
+  function farmPlan(p, s, model, size, halved) {
+    var cap = size || (p.tvl_usd >= 1e9 ? 1000 : p.tvl_usd >= 1e8 ? 500 : 250);
+    if (!size && s.age_days !== null && s.age_days < 120) cap = cap / 2;   // young code: halve the size
     var weeks = s.age_days === null ? 6 : s.age_days < 180 ? 10 : s.age_days < 540 ? 8 : 6;
     var pb = playbook(p.category);
     var ch = farmChain(p, cap, 4 + pb.txs + weeks), fee = ch.fee;
@@ -269,6 +317,13 @@
     var why = verdict === 'skip' ? 'the ' + usd(est) + ' scenario drop does not cover ' + usd(cost) + ' of costs' :
       verdict === 'farm' ? 'the scenario drop is ' + (est / cost).toFixed(1) + 'x its costs on a ' + s.confidence + '-confidence record' :
       'it pays, but ' + (shrinking ? 'TVL fell ' + Math.abs(p.change_7d).toFixed(0) + '% this week' : s.confidence === 'low' ? 'the record is thin' : 'only ' + (est / cost).toFixed(1) + 'x its costs') + ': farm half size';
+    // Thin means half size: the plan is rebuilt at half the capital, and skipped if it no longer pays.
+    if (verdict === 'thin' && !halved) {
+      var half = farmPlan(p, s, model, cap / 2, true);
+      half.verdict = half.net > 0 ? 'thin' : 'skip';
+      half.verdict_why = half.net > 0 ? why : 'at half size, the size its record allows, the drop no longer covers its costs';
+      return half;
+    }
     // Dates from the snapshot day, so every step says when, not just how long.
     var day = function (d) { return new Date(Date.parse(s.as_of + 'T00:00:00Z') + d * 86400000).toISOString().slice(0, 10); };
     var steps = [
@@ -284,6 +339,7 @@
       chain: ch.chain, chain_why: ch.why, fee: fee, capital: cap, weeks: weeks, kind: pb.kind,
       fees_total: fees, forgone: forgone, hands_on_min: 70 + 5 * weeks, bps: round4(bps),
       est_drop: est, net: net, break_even_pool: breakEvenPool, verdict: verdict, verdict_why: why,
+      break_even_odds: est > 0 ? round4(Math.min(1, cost * s.odds / est)) : 1,   // launch odds at which the drop pays its costs
       per_hour: Math.round(net / hours * 100) / 100, start: day(0), decide: day(7 * weeks),
       steps: steps
     };
@@ -322,14 +378,14 @@
     var draw = rng(20261114), pts = cal.points, seen = rows.map(function () { return []; });
     for (var k = 0; k < 100; k++) {
       var sample = pts.map(function () { return pts[Math.floor(draw() * pts.length)]; }), f = fit(sample, cal.structure, model.shrink, model);
-      rows.map(function (r, i) { return { i: i, v: (interceptFor(f, r.category).a + f.b * Math.log(r.tvl_usd)) + Math.log(r.model.growth * r.model.runway) }; })
+      rows.map(function (r, i) { return { i: i, v: (interceptFor(f, r.category).a + f.b * Math.log(r.tvl_usd)) + Math.log(r.model.growth * r.model.runway * r.model.odds) }; })
         .sort(function (a, b) { return b.v - a.v || a.i - b.i; }).forEach(function (o, j) { seen[o.i].push(j + 1); });
     }
     rows.forEach(function (r, i) { r.rank_range = [Math.round(quantile(seen[i], 0.1)), Math.round(quantile(seen[i], 0.9))]; });
   }
-  // FNV-1a over every row's slug, rank and value: main.ts puts it in data.js, the page recomputes and compares.
+  // FNV-1a over every row's slug, rank, value, verdict, net and farm steps: main.ts puts it in data.js, the page recomputes it.
   function digest(rows) {
-    var h = 0x811c9dc5, s = rows.map(function (r) { return r.slug + '|' + r.rank + '|' + r.implied_value_usd; }).join('\n');
+    var h = 0x811c9dc5, s = rows.map(function (r) { return [r.slug, r.rank, r.implied_value_usd, r.plan.verdict, r.plan.net].concat(r.farm_steps).join('|'); }).join('\n');
     for (var i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 16777619); }
     return ('0000000' + (h >>> 0).toString(16)).slice(-8);
   }
@@ -352,13 +408,9 @@
     rows.sort(function (a, b) { return b.implied_value_usd - a.implied_value_usd || bySlug(a, b); });
     rows.forEach(function (r, i) { r.rank = i + 1; });
     rankRanges(rows, cal, model);
-    var trading = cal.points.map(function (q) {
-      return { slug: q.slug, name: q.name, category: q.cat, symbol: q.symbol, tvl_usd: q.tvl, mcap_usd: q.mcap,
-        market_multiple: round4(q.mcap / q.tvl), model_base: Math.exp(interceptFor(cal.intercepts, q.cat).a + cal.elasticity * q.x) };
-    }).sort(function (a, b) { return b.mcap_usd - a.mcap_usd || bySlug(a, b); });
     return {
       as_of: snapshot.as_of, source: snapshot.source, floor_usd: snapshot.floor_usd, model: model, calibration: cal,
-      watchlist_size: snapshot.watchlist.length, rows: rows, trading: trading, universe: snapshot.protocols.length,
+      watchlist_size: snapshot.watchlist.length, rows: rows, universe: snapshot.protocols.length,
       reasons: reasons, digest: digest(rows)
     };
   }

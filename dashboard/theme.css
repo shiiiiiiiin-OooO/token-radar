@@ -35,15 +35,14 @@ button, input, select { font: inherit; color: inherit; }
 .kpi b { font: 600 20px var(--mono); }
 .kpi.ok b { color: var(--teal); }
 .kpi small { display: block; color: var(--dim); font: 11px var(--mono); }
-.tabs { display: flex; gap: var(--s1); border-bottom: 1px solid var(--line); margin-top: 0; }
 .tab { background: none; border: 0; padding: 4px var(--s4); color: var(--dim); cursor: pointer; border-bottom: 2px solid transparent; margin-bottom: -1px; }
 .tab[aria-selected='true'] { color: var(--text); border-bottom-color: var(--amber); }
 .tab small { font-family: var(--mono); color: var(--dim); margin-left: var(--s1); }
 .controls { display: flex; flex-wrap: wrap; gap: var(--s3); align-items: end; padding: var(--s2) 0; }
 .field { display: flex; flex-direction: column; gap: var(--s1); }
 .field label, .field .lbl { font-size: 11px; color: var(--dim); text-transform: uppercase; letter-spacing: 0.06em; }
-.field input, .field select { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 4px var(--s3); min-width: 150px; }
-.field input { min-width: 230px; }
+.field input, .field select { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 4px var(--s3); min-width: 120px; }
+.field input { min-width: 150px; width: 150px; }
 .field input:focus, .field select:focus, button:focus-visible { outline: 2px solid var(--amber); outline-offset: 1px; }
 .seg { display: flex; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 2px; }
 .seg button { background: none; border: 0; padding: 2px var(--s3); border-radius: 6px; color: var(--dim); cursor: pointer; }
@@ -115,7 +114,6 @@ ol.steps li::before { content: counter(s); font: 600 12px var(--mono); color: va
 ol.steps .ct { color: var(--dim); font: 12px var(--mono); }
 ol.steps .ct b { color: var(--text); font-weight: 500; }
 .peers td { padding: 5px var(--s2); font-size: 12px; }
-tr.fam td { color: var(--amber); }
 .card { background: var(--panel); border: 1px solid var(--line); border-radius: var(--r); padding: var(--s4) var(--s5); }
 .card h2 { font-size: 16px; margin: 0 0 var(--s3); }
 .card h2:not(:first-child) { margin-top: var(--s5); }
@@ -130,8 +128,8 @@ tr.fam td { color: var(--amber); }
 .acct p b { color: var(--text); }
 .acbar { display: flex; height: 8px; border-radius: 4px; overflow: hidden; background: var(--line); }
 .acbar i { display: block; height: 100%; }
-.k { display: inline-block; width: 8px; height: 8px; border-radius: 2px; margin: 0 4px 0 2px; vertical-align: 0; }
 .g0 { background: var(--amber); } .g1 { background: var(--blue); } .g2 { background: #5a6478; } .g3 { background: var(--teal); } .g4 { background: var(--red); } .g5 { background: #a78bfa; } .g6 { background: #3a4356; }
+.k { display: inline-block; width: 8px; height: 8px; border-radius: 2px; margin: 0 4px 0 2px; vertical-align: 0; }
 .panels { display: grid; grid-template-columns: 1fr 1.05fr 1fr; gap: var(--s3); padding: var(--s3) 0 var(--s2); }
 .panels .card { padding: var(--s3) var(--s4); }
 .panels h2 { font-size: 13px; margin: 0 0 var(--s2); }
